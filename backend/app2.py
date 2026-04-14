@@ -1,9 +1,10 @@
 import base64, hashlib, os, smtplib, uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, jsonify, redirect, request, send_from_directory, url_for
@@ -14,6 +15,16 @@ from werkzeug.security import check_password_hash, generate_password_hash
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Kolkata")
+
+
+def parse_client_datetime(value):
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo(APP_TIMEZONE))
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def can_write_directory(path):
     probe = Path(path) / ".rtf_write_probe.tmp"
     try:
@@ -89,7 +100,7 @@ app.config["DATABASE_BACKEND"] = "mysql" if app.config["SQLALCHEMY_DATABASE_URI"
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login_page"
-scheduler = BackgroundScheduler(daemon=True)
+scheduler = BackgroundScheduler(daemon=True, timezone="UTC")
 _scheduler_initialized = False
 
 
@@ -101,7 +112,7 @@ def ensure_scheduler_started():
         scheduler.start()
     restore_jobs()
     _scheduler_initialized = True
-    print(f"[*] Scheduler started in PID {os.getpid()} and jobs restored")
+    print(f"[*] Scheduler started in PID {os.getpid()} and jobs restored (scheduler_tz=UTC, app_tz={APP_TIMEZONE})", flush=True)
 
 
 @app.before_request
@@ -254,14 +265,17 @@ def schedule_job(message):
         return
     if message.recurrence_type == "once":
         scheduler.add_job(send_message, trigger="date", run_date=message.send_at, args=[message.id], id=message.job_id, replace_existing=True)
+        print(f"[*] Scheduled one-time job {message.job_id} at {message.send_at.isoformat()} UTC", flush=True)
         return
     interval_days = recurrence_to_interval_days(message.recurrence_type, message.recurrence_interval_days)
     if interval_days is None:
         return
     scheduler.add_job(send_message, trigger="interval", days=interval_days, next_run_time=message.next_run_at or message.send_at, args=[message.id], id=message.job_id, replace_existing=True)
+    print(f"[*] Scheduled recurring job {message.job_id}: every {interval_days} day(s), next={ (message.next_run_at or message.send_at).isoformat() } UTC", flush=True)
 def restore_jobs():
     with app.app_context():
         messages = ScheduledEmail.query.filter(ScheduledEmail.status == "scheduled").all()
+        print(f"[*] Restoring {len(messages)} scheduled messages", flush=True)
         for message in messages:
             if message.next_run_at and message.next_run_at < datetime.utcnow() and message.recurrence_type == "once":
                 continue
@@ -269,6 +283,7 @@ def restore_jobs():
                 schedule_job(message)
 def send_message(message_id):
     with app.app_context():
+        print(f"[*] send_message invoked for id={message_id} at {datetime.utcnow().isoformat()} UTC", flush=True)
         message = db.session.get(ScheduledEmail, message_id)
         if not message or message.status == "cancelled":
             return
@@ -305,7 +320,7 @@ def send_message(message_id):
                 )
             )
             db.session.commit()
-            print(f"[✓] Email sent to {message.recipient_email} — {message.subject}")
+            print(f"[✓] Email sent to {message.recipient_email} — {message.subject}", flush=True)
         except Exception as exc:
             message.last_error = str(exc)
             if message.recurrence_type == "once":
@@ -323,7 +338,7 @@ def send_message(message_id):
                 )
             )
             db.session.commit()
-            print(f"[✗] Failed to send email {message.id}: {exc}")
+            print(f"[✗] Failed to send email {message.id}: {exc}", flush=True)
 @app.route("/")
 def index():
     return redirect(url_for("dashboard_page" if current_user.is_authenticated else "login_page"))
@@ -463,7 +478,7 @@ def create_message():
     if not recipient_email or not subject or not body:
         return json_error("Recipient, subject, and body are required.")
     try:
-        send_at = datetime.fromisoformat(data["send_at"])
+        send_at = parse_client_datetime(data["send_at"])
     except ValueError:
         return json_error("Invalid send_at format.")
     if send_at <= datetime.utcnow():
@@ -476,7 +491,7 @@ def create_message():
         parsed_times = []
         for raw_time in specific_send_times:
             try:
-                parsed = datetime.fromisoformat(str(raw_time))
+                parsed = parse_client_datetime(str(raw_time))
             except ValueError:
                 return json_error("Invalid date in specific_send_times.")
             if parsed <= datetime.utcnow():
