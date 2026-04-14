@@ -90,7 +90,25 @@ db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = "login_page"
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.start()
+_scheduler_initialized = False
+
+
+def ensure_scheduler_started():
+    global _scheduler_initialized
+    if _scheduler_initialized:
+        return
+    if not scheduler.running:
+        scheduler.start()
+    restore_jobs()
+    _scheduler_initialized = True
+    print(f"[*] Scheduler started in PID {os.getpid()} and jobs restored")
+
+
+@app.before_request
+def _ensure_scheduler_started():
+    ensure_scheduler_started()
+
+
 def get_smtp_credentials():
     smtp_user = (os.environ.get("GMAIL_USER") or "").strip()
     smtp_pass = (os.environ.get("GMAIL_PASS") or "").strip()
@@ -540,7 +558,6 @@ def message_logs(message_id):
         return json_error("Not found.", 404)
     logs = message.send_logs.order_by(EmailSendLog.sent_at.desc()).all()
     return jsonify([serialize_log(log) for log in logs])
-restore_jobs()
 if __name__ == "__main__":
     smtp_user, smtp_pass = get_smtp_credentials()
     if not smtp_user or not smtp_pass:
