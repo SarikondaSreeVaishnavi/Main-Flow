@@ -46,16 +46,6 @@ def build_database_uri():
     database_url = normalize_database_uri((os.environ.get("DATABASE_URL") or os.environ.get("MYSQL_URL") or "").strip())
     if database_url:
         return database_url
-    mysql_host = os.environ.get("MYSQL_HOST", "localhost")
-    mysql_port = os.environ.get("MYSQL_PORT", "3306")
-    mysql_user = os.environ.get("MYSQL_USER", "root")
-    mysql_password = os.environ.get("MYSQL_PASSWORD", "root")
-    mysql_database = os.environ.get("MYSQL_DATABASE", "rtf_project")
-    if mysql_host and mysql_user and mysql_password and mysql_database:
-        return (
-            f"mysql+pymysql://{mysql_user}:{mysql_password}"
-            f"@{mysql_host}:{mysql_port}/{mysql_database}"
-        )
     return f"sqlite:///{resolve_sqlite_path()}"
 app = Flask(__name__, static_folder=None)
 app.config.update(SECRET_KEY=os.environ.get("SECRET_KEY", "dev-secret-key"), SQLALCHEMY_DATABASE_URI=build_database_uri(), SQLALCHEMY_TRACK_MODIFICATIONS=False)
@@ -73,11 +63,13 @@ def ensure_mysql_database_exists():
     if not uri.startswith("mysql+pymysql://"):
         return
     parsed_uri = urlparse(uri)
-    mysql_host = os.environ.get("MYSQL_HOST") or parsed_uri.hostname or "localhost"
+    mysql_host = os.environ.get("MYSQL_HOST") or parsed_uri.hostname
     mysql_port = int(os.environ.get("MYSQL_PORT") or parsed_uri.port or 3306)
     mysql_user = os.environ.get("MYSQL_USER") or parsed_uri.username or "root"
     mysql_password = os.environ.get("MYSQL_PASSWORD") or parsed_uri.password or "root"
     mysql_database = os.environ.get("MYSQL_DATABASE") or parsed_uri.path.lstrip("/") or "rtf_project"
+    if not mysql_host:
+        raise RuntimeError("MYSQL_URL or DATABASE_URL must include a MySQL host for Railway deployment.")
     try:
         conn = pymysql.connect(
             host=mysql_host,
