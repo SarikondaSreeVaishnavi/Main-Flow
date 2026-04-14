@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
+from urllib.parse import urlparse
 from apscheduler.schedulers.background import BackgroundScheduler
 from cryptography.fernet import Fernet, InvalidToken
 from flask import Flask, jsonify, redirect, request, send_from_directory, url_for
@@ -35,8 +36,14 @@ def resolve_sqlite_path():
     db_dir = fallback_root / "rtf-project"
     db_dir.mkdir(parents=True, exist_ok=True)
     return str(db_dir / "rtf_demo.db")
+def normalize_database_uri(database_uri):
+    if not database_uri:
+        return None
+    if database_uri.startswith("mysql://"):
+        return database_uri.replace("mysql://", "mysql+pymysql://", 1)
+    return database_uri
 def build_database_uri():
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = normalize_database_uri((os.environ.get("DATABASE_URL") or os.environ.get("MYSQL_URL") or "").strip())
     if database_url:
         return database_url
     mysql_host = os.environ.get("MYSQL_HOST", "localhost")
@@ -65,11 +72,12 @@ def ensure_mysql_database_exists():
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     if not uri.startswith("mysql+pymysql://"):
         return
-    mysql_host = os.environ.get("MYSQL_HOST", "localhost")
-    mysql_port = int(os.environ.get("MYSQL_PORT", "3306"))
-    mysql_user = os.environ.get("MYSQL_USER", "root")
-    mysql_password = os.environ.get("MYSQL_PASSWORD", "root")
-    mysql_database = os.environ.get("MYSQL_DATABASE", "rtf_project")
+    parsed_uri = urlparse(uri)
+    mysql_host = os.environ.get("MYSQL_HOST") or parsed_uri.hostname or "localhost"
+    mysql_port = int(os.environ.get("MYSQL_PORT") or parsed_uri.port or 3306)
+    mysql_user = os.environ.get("MYSQL_USER") or parsed_uri.username or "root"
+    mysql_password = os.environ.get("MYSQL_PASSWORD") or parsed_uri.password or "root"
+    mysql_database = os.environ.get("MYSQL_DATABASE") or parsed_uri.path.lstrip("/") or "rtf_project"
     try:
         conn = pymysql.connect(
             host=mysql_host,
@@ -548,4 +556,4 @@ if __name__ == "__main__":
     if app.config["DATABASE_BACKEND"] == "sqlite":
         print("⚠  Using SQLite fallback because no MySQL DATABASE_URL or MYSQL_* variables were provided.")
         print(f"ℹ  SQLite path: {app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')}")
-    app.run(debug=True, port=5000, use_reloader=False)
+    app.run(host="0.0.0.0", debug=os.environ.get("FLASK_DEBUG") == "1", port=int(os.environ.get("PORT", "5000")), use_reloader=False)
