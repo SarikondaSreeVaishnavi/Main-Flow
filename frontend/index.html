@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mail Flow | Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+<body class="page page-auth">
+  <main class="auth-shell">
+    <section class="auth-hero">
+      <div class="brand-mark">MF</div>
+      <h1>Mail Flow</h1>
+      <p class="hero-copy">Log in once, then schedule one-off or recurring messages with sender, recipient, and delivery history stored in your database.</p>
+      <div class="hero-stats">
+        <div><strong>Daily</strong><span>send every 1 day</span></div>
+        <div><strong>Weekly</strong><span>send every 7 days</span></div>
+        <div><strong>Custom</strong><span>every N days</span></div>
+      </div>
+    </section>
+
+    <section class="auth-card">
+      <div class="auth-tabs">
+        <button class="auth-tab active" data-tab="loginForm">Sign in</button>
+        <button class="auth-tab" data-tab="registerForm">Create account</button>
+      </div>
+
+      <form id="loginForm" class="auth-form active">
+        <h2>Welcome back</h2>
+        <p>Use your app account email. That becomes the sender identity stored in the system.</p>
+        <label for="loginEmail">Email</label>
+        <input id="loginEmail" type="email" placeholder="you@example.com" autocomplete="email">
+        <label for="loginPassword">Password</label>
+        <input id="loginPassword" type="password" placeholder="Your password" autocomplete="current-password">
+        <button type="submit" class="primary-btn">Sign in</button>
+      </form>
+
+      <form id="registerForm" class="auth-form">
+        <h2>Create account</h2>
+        <p>This sets up the login page and sender identity in MySQL.</p>
+        <label for="registerName">Full name</label>
+        <input id="registerName" type="text" placeholder="Shirin Alvita" autocomplete="name">
+        <label for="registerEmail">Email</label>
+        <input id="registerEmail" type="email" placeholder="you@example.com" autocomplete="email">
+        <label for="registerPassword">Password</label>
+        <input id="registerPassword" type="password" placeholder="Create a password" autocomplete="new-password">
+        <button type="submit" class="primary-btn">Create account</button>
+      </form>
+
+      <div class="auth-note">If Gmail SMTP credentials are not set on the server, the app will still run but email delivery will fail.</div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/frontend/login.js"></script>
+</body>
+</html>

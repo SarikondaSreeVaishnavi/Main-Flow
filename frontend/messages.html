@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mail Flow | Messages</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/frontend/styles.css">
+</head>
+<body class="page page-app">
+  <header class="topbar">
+    <div>
+      <span class="brand-pill">Mail Flow</span>
+      <h1>Messages</h1>
+    </div>
+    <nav class="topnav">
+      <a class="nav-link" href="/dashboard">Compose</a>
+      <a class="nav-link active" href="/messages">Messages</a>
+      <button class="nav-link nav-button" id="logoutButton" type="button">Logout</button>
+    </nav>
+  </header>
+
+  <main class="page-section">
+    <section class="panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Database records</p>
+          <h2>Scheduled and sent messages</h2>
+        </div>
+        <div class="legend">
+          <span><i class="dot dot-scheduled"></i> Scheduled</span>
+          <span><i class="dot dot-sent"></i> Sent</span>
+          <span><i class="dot dot-failed"></i> Failed</span>
+          <span><i class="dot dot-cancelled"></i> Cancelled</span>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Message ID</th>
+              <th>Sender ID</th>
+              <th>Send To ID</th>
+              <th>Send To Email</th>
+              <th>Subject</th>
+              <th>Recurrence</th>
+              <th>Send At</th>
+              <th>Next Run</th>
+              <th>Last Sent</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="messagesTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/frontend/shared.js"></script>
+  <script src="/frontend/messages.js"></script>
+</body>
+</html>
