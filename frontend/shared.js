@@ -41,11 +41,12 @@ async function logoutUser() {
 }
 
 function recurrenceLabel(message) {
+  const endsAt = message.recurrence_end_at ? ` until ${formatDate(message.recurrence_end_at)}` : '';
   if (message.recurrence_type === 'every_n_days') {
-    return `Every ${message.recurrence_interval_days} days`;
+    return `Every ${message.recurrence_interval_days} days${endsAt}`;
   }
-  if (message.recurrence_type === 'daily') return 'Daily';
-  if (message.recurrence_type === 'weekly') return 'Weekly';
+  if (message.recurrence_type === 'daily') return `Daily${endsAt}`;
+  if (message.recurrence_type === 'weekly') return `Weekly${endsAt}`;
   return 'One time';
 }
 

@@ -11,12 +11,13 @@ from flask import Flask, jsonify, redirect, request, send_from_directory, url_fo
 from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 from flask_sqlalchemy import SQLAlchemy
 import pymysql
+from sqlalchemy import inspect, text
 from werkzeug.security import check_password_hash, generate_password_hash
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Kolkata")
-RUN_SCHEDULER = (os.environ.get("RUN_SCHEDULER", "true").strip().lower() in {"1", "true", "yes", "on"})
+RUN_SCHEDULER = (os.environ.get("RUN_SCHEDULER", "false").strip().lower() in {"1", "true", "yes", "on"})
 
 
 def parse_client_datetime(value):
@@ -114,6 +115,8 @@ def ensure_scheduler_started():
     if not scheduler.running:
         scheduler.start()
     restore_jobs()
+    if not scheduler.get_job("sync_pending_messages"):
+        scheduler.add_job(restore_jobs, trigger="interval", minutes=1, id="sync_pending_messages", replace_existing=True)
     _scheduler_initialized = True
     print(f"[*] Scheduler started in PID {os.getpid()} and jobs restored (scheduler_tz=UTC, app_tz={APP_TIMEZONE})", flush=True)
 
@@ -170,6 +173,7 @@ class ScheduledEmail(db.Model):
     send_at = db.Column(db.DateTime, nullable=False)
     recurrence_type = db.Column(db.String(32), nullable=False, default="once")
     recurrence_interval_days = db.Column(db.Integer, nullable=True)
+    recurrence_end_at = db.Column(db.DateTime, nullable=True)
     next_run_at = db.Column(db.DateTime, nullable=True)
     last_sent_at = db.Column(db.DateTime, nullable=True)
     last_error = db.Column(db.Text, nullable=True)
@@ -191,9 +195,23 @@ class EmailSendLog(db.Model):
     error_message = db.Column(db.Text, nullable=True)
     sent_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     message = db.relationship("ScheduledEmail", back_populates="send_logs")
+
+
+def ensure_schema_updates():
+    try:
+        table_columns = {column["name"] for column in inspect(db.engine).get_columns("scheduled_email")}
+        if "recurrence_end_at" not in table_columns:
+            with db.engine.begin() as connection:
+                connection.execute(text("ALTER TABLE scheduled_email ADD COLUMN recurrence_end_at DATETIME NULL"))
+            print("[*] Applied schema update: added scheduled_email.recurrence_end_at", flush=True)
+    except Exception as exc:
+        print(f"⚠  Could not apply schema updates automatically: {exc}", flush=True)
+
+
 with app.app_context():
     ensure_mysql_database_exists()
     db.create_all()
+    ensure_schema_updates()
 def json_error(message, code=400): return jsonify({"error": message}), code
 def user_payload(user): return {"id": user.id, "name": user.name, "email": user.email}
 def owned_message_or_404(message_id):
@@ -226,7 +244,10 @@ def compute_next_run(message):
     if interval_days is None:
         return None
     base_time = message.next_run_at or message.send_at
-    return base_time + timedelta(days=interval_days)
+    next_run = base_time + timedelta(days=interval_days)
+    if message.recurrence_end_at and next_run > message.recurrence_end_at:
+        return None
+    return next_run
 def serialize_message(message):
     return {
         "id": message.id,
@@ -241,6 +262,7 @@ def serialize_message(message):
         "send_at": message.send_at.isoformat(),
         "recurrence_type": message.recurrence_type,
         "recurrence_interval_days": message.recurrence_interval_days,
+        "recurrence_end_at": message.recurrence_end_at.isoformat() if message.recurrence_end_at else None,
         "next_run_at": message.next_run_at.isoformat() if message.next_run_at else None,
         "last_sent_at": message.last_sent_at.isoformat() if message.last_sent_at else None,
         "last_error": message.last_error,
@@ -275,17 +297,31 @@ def schedule_job(message):
     interval_days = recurrence_to_interval_days(message.recurrence_type, message.recurrence_interval_days)
     if interval_days is None:
         return
-    scheduler.add_job(send_message, trigger="interval", days=interval_days, next_run_time=message.next_run_at or message.send_at, args=[message.id], id=message.job_id, replace_existing=True)
-    print(f"[*] Scheduled recurring job {message.job_id}: every {interval_days} day(s), next={ (message.next_run_at or message.send_at).isoformat() } UTC", flush=True)
+    next_run = message.next_run_at or message.send_at
+    if message.recurrence_end_at and next_run > message.recurrence_end_at:
+        message.status = "sent"
+        message.next_run_at = None
+        db.session.commit()
+        return
+    scheduler.add_job(send_message, trigger="interval", days=interval_days, next_run_time=next_run, end_date=message.recurrence_end_at, args=[message.id], id=message.job_id, replace_existing=True)
+    print(f"[*] Scheduled recurring job {message.job_id}: every {interval_days} day(s), next={next_run.isoformat()} UTC", flush=True)
 def restore_jobs():
     with app.app_context():
         messages = ScheduledEmail.query.filter(ScheduledEmail.status == "scheduled").all()
         print(f"[*] Restoring {len(messages)} scheduled messages", flush=True)
+        has_updates = False
         for message in messages:
+            if message.recurrence_type != "once" and message.recurrence_end_at and message.recurrence_end_at < datetime.utcnow():
+                message.status = "sent"
+                message.next_run_at = None
+                has_updates = True
+                continue
             if message.next_run_at and message.next_run_at < datetime.utcnow() and message.recurrence_type == "once":
                 continue
             if message.send_at >= datetime.utcnow() or message.recurrence_type != "once":
                 schedule_job(message)
+        if has_updates:
+            db.session.commit()
 def send_message(message_id):
     with app.app_context():
         print(f"[*] send_message invoked for id={message_id} at {datetime.utcnow().isoformat()} UTC", flush=True)
@@ -311,8 +347,13 @@ def send_message(message_id):
                 message.status = "sent"
                 message.next_run_at = None
             else:
-                message.status = "scheduled"
-                message.next_run_at = compute_next_run(message)
+                next_run = compute_next_run(message)
+                if next_run is None:
+                    message.status = "sent"
+                    message.next_run_at = None
+                else:
+                    message.status = "scheduled"
+                    message.next_run_at = next_run
             db.session.add(
                 EmailSendLog(
                     message_id=message.id,
@@ -479,6 +520,7 @@ def create_message():
     body = data.get("body") or ""
     recurrence_type = (data.get("recurrence_type") or "once").strip()
     recurrence_interval_days = data.get("recurrence_interval_days")
+    recurrence_end_at_raw = data.get("recurrence_end_at")
     specific_send_times = data.get("specific_send_times") or []
     if not recipient_email or not subject or not body:
         return json_error("Recipient, subject, and body are required.")
@@ -490,6 +532,20 @@ def create_message():
         return json_error("Scheduled time must be in the future.")
     if recurrence_type not in {"once", "daily", "weekly", "every_n_days", "specific_dates"}:
         return json_error("Invalid recurrence type.")
+
+    recurrence_end_at = None
+    if recurrence_end_at_raw not in (None, ""):
+        try:
+            recurrence_end_at = parse_client_datetime(str(recurrence_end_at_raw))
+        except ValueError:
+            return json_error("Invalid recurrence_end_at format.")
+
+    if recurrence_type in {"once", "specific_dates"} and recurrence_end_at is not None:
+        return json_error("recurrence_end_at is only supported for recurring schedules.")
+
+    if recurrence_type in {"daily", "weekly", "every_n_days"} and recurrence_end_at is not None and recurrence_end_at <= send_at:
+        return json_error("recurrence_end_at must be after the first send time.")
+
     if recurrence_type == "specific_dates":
         if not isinstance(specific_send_times, list) or not specific_send_times:
             return json_error("specific_send_times must include one or more dates.")
@@ -517,6 +573,7 @@ def create_message():
                 send_at=parsed_time,
                 recurrence_type="once",
                 recurrence_interval_days=None,
+                recurrence_end_at=None,
                 next_run_at=parsed_time,
                 status="scheduled",
             )
@@ -550,6 +607,7 @@ def create_message():
         send_at=send_at,
         recurrence_type=recurrence_type,
         recurrence_interval_days=recurrence_interval_days,
+        recurrence_end_at=recurrence_end_at if recurrence_type in {"daily", "weekly", "every_n_days"} else None,
         next_run_at=send_at,
         status="scheduled",
     )

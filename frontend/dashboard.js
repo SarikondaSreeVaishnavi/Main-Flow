@@ -3,6 +3,7 @@ const smtpForm = document.getElementById('smtpForm');
 const recurrenceType = document.getElementById('recurrenceType');
 const intervalWrap = document.getElementById('intervalWrap');
 const specificDatesWrap = document.getElementById('specificDatesWrap');
+const endDateWrap = document.getElementById('endDateWrap');
 const specificDatePicker = document.getElementById('specificDatePicker');
 const addDateButton = document.getElementById('addDateButton');
 const selectedDatesEl = document.getElementById('selectedDates');
@@ -12,8 +13,13 @@ let currentUser = null;
 const selectedDates = new Set();
 
 function toggleIntervalInput() {
+  const recurring = ['daily', 'weekly', 'every_n_days'].includes(recurrenceType.value);
   intervalWrap.classList.toggle('hidden', recurrenceType.value !== 'every_n_days');
   specificDatesWrap.classList.toggle('hidden', recurrenceType.value !== 'specific_dates');
+  endDateWrap.classList.toggle('hidden', !recurring);
+  if (!recurring) {
+    document.getElementById('recurrenceEndAt').value = '';
+  }
 }
 
 function renderSelectedDates() {
@@ -124,6 +130,8 @@ messageForm.addEventListener('submit', async (event) => {
 
   const baseSendAt = document.getElementById('sendAt').value;
   const recurrence = recurrenceType.value;
+  const recurrenceEndAt = document.getElementById('recurrenceEndAt').value;
+  const recurring = ['daily', 'weekly', 'every_n_days'].includes(recurrence);
   const specificDates = recurrence === 'specific_dates' ? Array.from(selectedDates).sort() : [];
 
   if (recurrence === 'specific_dates' && !specificDates.length) {
@@ -141,6 +149,7 @@ messageForm.addEventListener('submit', async (event) => {
         send_at: baseSendAt,
         recurrence_type: recurrence,
         recurrence_interval_days: document.getElementById('intervalDays').value,
+        recurrence_end_at: recurring ? (recurrenceEndAt || undefined) : undefined,
         specific_send_times: recurrence === 'specific_dates' ? buildSpecificSendTimes(baseSendAt, specificDates) : undefined,
       }),
     });

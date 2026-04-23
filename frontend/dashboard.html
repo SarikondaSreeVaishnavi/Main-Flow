@@ -137,6 +137,12 @@
           <p class="helper-text">Pick one or more dates (for example 12th, 26th, 31st) and the app will create separate one-time schedules.</p>
         </div>
 
+        <div id="endDateWrap" class="hidden">
+          <label for="recurrenceEndAt">Stop recurrence after</label>
+          <input type="datetime-local" id="recurrenceEndAt">
+          <p class="helper-text">Optional. If set, recurring emails stop after this date/time.</p>
+        </div>
+
         <div class="form-footer">
           <p class="helper-text">The sender user is the logged-in account. Delivery uses the SMTP credentials saved above.</p>
           <button type="submit" class="primary-btn">Save schedule</button>
