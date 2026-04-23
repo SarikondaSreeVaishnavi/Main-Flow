@@ -16,6 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Kolkata")
+RUN_SCHEDULER = (os.environ.get("RUN_SCHEDULER", "true").strip().lower() in {"1", "true", "yes", "on"})
 
 
 def parse_client_datetime(value):
@@ -106,6 +107,8 @@ _scheduler_initialized = False
 
 def ensure_scheduler_started():
     global _scheduler_initialized
+    if not RUN_SCHEDULER:
+        return
     if _scheduler_initialized:
         return
     if not scheduler.running:
@@ -258,6 +261,8 @@ def serialize_log(log):
         "sent_at": log.sent_at.isoformat(),
     }
 def schedule_job(message):
+    if not RUN_SCHEDULER:
+        return
     existing_job = scheduler.get_job(message.job_id)
     if existing_job:
         scheduler.remove_job(message.job_id)
@@ -577,6 +582,7 @@ if __name__ == "__main__":
     smtp_user, smtp_pass = get_smtp_credentials()
     if not smtp_user or not smtp_pass:
         print("⚠  Warning: GMAIL_USER / GMAIL_PASS not set. Emails will fail to send.")
+    ensure_scheduler_started()
     if app.config["DATABASE_BACKEND"] == "sqlite":
         print("⚠  Using SQLite fallback because no MySQL DATABASE_URL or MYSQL_* variables were provided.")
         print(f"ℹ  SQLite path: {app.config['SQLALCHEMY_DATABASE_URI'].replace('sqlite:///', '')}")
