@@ -22,7 +22,17 @@ function toast(message, type = 'success') {
 
 function formatDate(value) {
   if (!value) return '—';
-  return new Date(value).toLocaleString();
+  const normalized = normalizeUtcTimestamp(value);
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function normalizeUtcTimestamp(value) {
+  if (typeof value !== 'string') return value;
+  // Backend stores UTC as naive ISO (no timezone); mark it explicitly as UTC for correct local rendering.
+  const hasTimezone = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value);
+  return hasTimezone ? value : `${value}Z`;
 }
 
 async function logoutUser() {
