@@ -322,6 +322,39 @@ def restore_jobs():
                 schedule_job(message)
         if has_updates:
             db.session.commit()
+
+
+def process_due_messages(run_time=None, limit=200):
+    run_time = run_time or datetime.utcnow()
+    due_messages = (
+        ScheduledEmail.query
+        .filter(
+            ScheduledEmail.status == "scheduled",
+            ScheduledEmail.next_run_at.isnot(None),
+            ScheduledEmail.next_run_at <= run_time,
+        )
+        .order_by(ScheduledEmail.next_run_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+    claimed_ids = []
+    for message in due_messages:
+        claimed = (
+            ScheduledEmail.query
+            .filter(ScheduledEmail.id == message.id, ScheduledEmail.status == "scheduled")
+            .update({"status": "processing", "updated_at": datetime.utcnow()}, synchronize_session=False)
+        )
+        db.session.commit()
+        if claimed:
+            claimed_ids.append(message.id)
+
+    for message_id in claimed_ids:
+        send_message(message_id)
+
+    return {"checked": len(due_messages), "claimed": len(claimed_ids)}
+
+
 def send_message(message_id):
     with app.app_context():
         print(f"[*] send_message invoked for id={message_id} at {datetime.utcnow().isoformat()} UTC", flush=True)
@@ -371,6 +404,8 @@ def send_message(message_id):
             message.last_error = str(exc)
             if message.recurrence_type == "once":
                 message.status = "failed"
+            else:
+                message.status = "scheduled"
             db.session.add(
                 EmailSendLog(
                     message_id=message.id,
