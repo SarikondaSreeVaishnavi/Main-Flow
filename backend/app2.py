@@ -18,10 +18,14 @@ PROJECT_ROOT = os.path.dirname(BASE_DIR)
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Asia/Kolkata")
 RUN_SCHEDULER = (os.environ.get("RUN_SCHEDULER", "false").strip().lower() in {"1", "true", "yes", "on"})
+SCHEDULER_MODE = (os.environ.get("SCHEDULER_MODE", "both").strip().lower() or "both")
+APSCHEDULER_ENABLED = SCHEDULER_MODE in {"apscheduler", "both"}
+CRON_TRIGGER_ENABLED = SCHEDULER_MODE in {"cron", "both"}
 DUE_PROCESSING_ENABLED = (os.environ.get("DUE_PROCESSING_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
 DUE_PROCESSING_INTERVAL_SECONDS = max(1, int(os.environ.get("DUE_PROCESSING_INTERVAL_SECONDS", "15") or "15"))
 DUE_PROCESSING_LIMIT = max(1, int(os.environ.get("DUE_PROCESSING_LIMIT", "100") or "100"))
 MAX_DUE_PROCESSING_LIMIT = max(1, int(os.environ.get("MAX_DUE_PROCESSING_LIMIT", "50") or "50"))
+PROCESSING_STALE_SECONDS = max(60, int(os.environ.get("PROCESSING_STALE_SECONDS", "300") or "300"))
 
 
 def parse_client_datetime(value):
@@ -119,6 +123,8 @@ _last_due_processing_at = 0.0
 
 def ensure_scheduler_started():
     global _scheduler_initialized
+    if not APSCHEDULER_ENABLED:
+        return
     if _scheduler_initialized:
         return
     if not scheduler.running:
@@ -126,7 +132,15 @@ def ensure_scheduler_started():
     if RUN_SCHEDULER:
         restore_jobs()
         if not scheduler.get_job("sync_pending_messages"):
-            scheduler.add_job(restore_jobs, trigger="interval", minutes=1, id="sync_pending_messages", replace_existing=True)
+            scheduler.add_job(
+                restore_jobs,
+                trigger="interval",
+                minutes=1,
+                id="sync_pending_messages",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+            )
     if not scheduler.get_job("process_due_messages"):
         scheduler.add_job(
             process_due_messages_job,
@@ -134,11 +148,13 @@ def ensure_scheduler_started():
             seconds=DUE_PROCESSING_INTERVAL_SECONDS,
             id="process_due_messages",
             replace_existing=True,
+            max_instances=1,
+            coalesce=True,
         )
     _scheduler_initialized = True
     mode = "full" if RUN_SCHEDULER else "due-only"
     print(
-        f"[*] Scheduler started in PID {os.getpid()} (mode={mode}, scheduler_tz=UTC, app_tz={APP_TIMEZONE})",
+        f"[*] Scheduler started in PID {os.getpid()} (mode={mode}, scheduler_mode={SCHEDULER_MODE}, scheduler_tz=UTC, app_tz={APP_TIMEZONE})",
         flush=True,
     )
 
@@ -166,7 +182,7 @@ def process_due_messages_fallback():
         if now - _last_due_processing_at < DUE_PROCESSING_INTERVAL_SECONDS:
             return
         _last_due_processing_at = now
-        result = process_due_messages(limit=DUE_PROCESSING_LIMIT)
+        result = run_due_processing_once(source="fallback", limit=DUE_PROCESSING_LIMIT)
         if result["claimed"]:
             print(
                 f"[*] Fallback due processing claimed={result['claimed']} checked={result['checked']}",
@@ -182,6 +198,24 @@ def bootstrap_background_processing():
     # Start background processors as soon as the process boots so due messages
     # are not dependent on incoming HTTP requests.
     ensure_scheduler_started()
+
+
+def run_due_processing_once(source, limit=None):
+    if not DUE_PROCESSING_ENABLED:
+        return {"checked": 0, "claimed": 0, "skipped": True, "reason": "disabled", "source": source}
+
+    if not _due_processing_lock.acquire(blocking=False):
+        return {"checked": 0, "claimed": 0, "skipped": True, "reason": "busy", "source": source}
+
+    try:
+        recovered = recover_stale_processing_messages()
+        result = process_due_messages(limit=limit or DUE_PROCESSING_LIMIT)
+        result["skipped"] = False
+        result["source"] = source
+        result["recovered"] = recovered
+        return result
+    finally:
+        _due_processing_lock.release()
 
 
 def get_smtp_credentials():
@@ -384,12 +418,34 @@ def restore_jobs():
 
 def process_due_messages_job():
     with app.app_context():
-        result = process_due_messages(limit=DUE_PROCESSING_LIMIT)
+        result = run_due_processing_once(source="apscheduler", limit=DUE_PROCESSING_LIMIT)
         if result["claimed"]:
             print(
                 f"[*] Scheduler due processing claimed={result['claimed']} checked={result['checked']}",
                 flush=True,
             )
+
+
+def recover_stale_processing_messages(run_time=None):
+    run_time = run_time or datetime.utcnow()
+    stale_before = run_time - timedelta(seconds=PROCESSING_STALE_SECONDS)
+    recovered = (
+        ScheduledEmail.query
+        .filter(
+            ScheduledEmail.status == "processing",
+            ScheduledEmail.updated_at <= stale_before,
+            ScheduledEmail.next_run_at.isnot(None),
+            ScheduledEmail.next_run_at <= run_time,
+        )
+        .update({"status": "scheduled", "updated_at": run_time}, synchronize_session=False)
+    )
+    if recovered:
+        db.session.commit()
+        print(
+            f"[*] Recovered {recovered} stale processing message(s) older than {PROCESSING_STALE_SECONDS}s",
+            flush=True,
+        )
+    return recovered
 
 
 def process_due_messages(run_time=None, limit=200):
@@ -501,13 +557,16 @@ def index():
 
 @app.route("/run-due-jobs", methods=["GET"])
 def run_due_jobs():
+    if not CRON_TRIGGER_ENABLED:
+        return json_error("Cron trigger disabled for current SCHEDULER_MODE", 403)
+
     trigger_token = (os.environ.get("CRON_TRIGGER_TOKEN") or "").strip()
     if trigger_token:
         provided_token = (request.args.get("token") or "").strip()
         if not hmac.compare_digest(provided_token, trigger_token):
             return json_error("Unauthorized", 403)
 
-    result = process_due_messages(limit=DUE_PROCESSING_LIMIT)
+    result = run_due_processing_once(source="cron", limit=DUE_PROCESSING_LIMIT)
     return jsonify({"ok": True, **result, "processed_at": datetime.utcnow().isoformat() + "Z"})
 
 
