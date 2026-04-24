@@ -1,4 +1,4 @@
-import base64, hashlib, os, smtplib, threading, time, uuid
+import base64, hashlib, hmac, os, smtplib, threading, time, uuid
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -21,6 +21,7 @@ RUN_SCHEDULER = (os.environ.get("RUN_SCHEDULER", "false").strip().lower() in {"1
 DUE_PROCESSING_ENABLED = (os.environ.get("DUE_PROCESSING_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"})
 DUE_PROCESSING_INTERVAL_SECONDS = max(1, int(os.environ.get("DUE_PROCESSING_INTERVAL_SECONDS", "15") or "15"))
 DUE_PROCESSING_LIMIT = max(1, int(os.environ.get("DUE_PROCESSING_LIMIT", "100") or "100"))
+MAX_DUE_PROCESSING_LIMIT = max(1, int(os.environ.get("MAX_DUE_PROCESSING_LIMIT", "50") or "50"))
 
 
 def parse_client_datetime(value):
@@ -118,19 +119,28 @@ _last_due_processing_at = 0.0
 
 def ensure_scheduler_started():
     global _scheduler_initialized
-    if not RUN_SCHEDULER:
-        return
     if _scheduler_initialized:
         return
     if not scheduler.running:
         scheduler.start()
-    restore_jobs()
-    if not scheduler.get_job("sync_pending_messages"):
-        scheduler.add_job(restore_jobs, trigger="interval", minutes=1, id="sync_pending_messages", replace_existing=True)
+    if RUN_SCHEDULER:
+        restore_jobs()
+        if not scheduler.get_job("sync_pending_messages"):
+            scheduler.add_job(restore_jobs, trigger="interval", minutes=1, id="sync_pending_messages", replace_existing=True)
     if not scheduler.get_job("process_due_messages"):
-        scheduler.add_job(process_due_messages_job, trigger="interval", seconds=30, id="process_due_messages", replace_existing=True)
+        scheduler.add_job(
+            process_due_messages_job,
+            trigger="interval",
+            seconds=DUE_PROCESSING_INTERVAL_SECONDS,
+            id="process_due_messages",
+            replace_existing=True,
+        )
     _scheduler_initialized = True
-    print(f"[*] Scheduler started in PID {os.getpid()} and jobs restored (scheduler_tz=UTC, app_tz={APP_TIMEZONE})", flush=True)
+    mode = "full" if RUN_SCHEDULER else "due-only"
+    print(
+        f"[*] Scheduler started in PID {os.getpid()} (mode={mode}, scheduler_tz=UTC, app_tz={APP_TIMEZONE})",
+        flush=True,
+    )
 
 
 @app.before_request
@@ -166,6 +176,12 @@ def process_due_messages_fallback():
         print(f"⚠  Fallback due processing failed: {exc}", flush=True)
     finally:
         _due_processing_lock.release()
+
+
+def bootstrap_background_processing():
+    # Start background processors as soon as the process boots so due messages
+    # are not dependent on incoming HTTP requests.
+    ensure_scheduler_started()
 
 
 def get_smtp_credentials():
@@ -377,6 +393,7 @@ def process_due_messages_job():
 
 
 def process_due_messages(run_time=None, limit=200):
+    limit = max(1, min(int(limit or DUE_PROCESSING_LIMIT), MAX_DUE_PROCESSING_LIMIT))
     run_time = run_time or datetime.utcnow()
     due_messages = (
         ScheduledEmail.query
@@ -472,9 +489,28 @@ def send_message(message_id):
             )
             db.session.commit()
             print(f"[✗] Failed to send email {message.id}: {exc}", flush=True)
+
+
+bootstrap_background_processing()
+
+
 @app.route("/")
 def index():
     return redirect(url_for("dashboard_page" if current_user.is_authenticated else "login_page"))
+
+
+@app.route("/run-due-jobs", methods=["GET"])
+def run_due_jobs():
+    trigger_token = (os.environ.get("CRON_TRIGGER_TOKEN") or "").strip()
+    if trigger_token:
+        provided_token = (request.args.get("token") or "").strip()
+        if not hmac.compare_digest(provided_token, trigger_token):
+            return json_error("Unauthorized", 403)
+
+    result = process_due_messages(limit=DUE_PROCESSING_LIMIT)
+    return jsonify({"ok": True, **result, "processed_at": datetime.utcnow().isoformat() + "Z"})
+
+
 @app.route("/login")
 def login_page():
     if current_user.is_authenticated:
