@@ -61,7 +61,12 @@ def build_database_uri():
         return database_url
     return f"sqlite:///{resolve_sqlite_path()}"
 app = Flask(__name__, static_folder=None)
-app.config.update(SECRET_KEY=os.environ.get("SECRET_KEY", "dev-secret-key"), SQLALCHEMY_DATABASE_URI=build_database_uri(), SQLALCHEMY_TRACK_MODIFICATIONS=False)
+app.config.update(
+    SECRET_KEY=os.environ.get("SECRET_KEY", "dev-secret-key"),
+    SQLALCHEMY_DATABASE_URI=build_database_uri(),
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    REMEMBER_COOKIE_DURATION=timedelta(days=30),
+)
 def derive_fernet_key(secret):
     return base64.urlsafe_b64encode(hashlib.sha256(secret.encode("utf-8")).digest())
 def get_credential_cipher():
@@ -425,6 +430,8 @@ def index():
     return redirect(url_for("dashboard_page" if current_user.is_authenticated else "login_page"))
 @app.route("/login")
 def login_page():
+    if current_user.is_authenticated:
+        return redirect(url_for("dashboard_page"))
     return send_from_directory(FRONTEND_DIR, "login.html")
 @app.route("/dashboard")
 @login_required
@@ -517,7 +524,7 @@ def register():
     )
     db.session.add(user)
     db.session.commit()
-    login_user(user)
+    login_user(user, remember=True)
     return jsonify({"message": "Account created.", "user": user_payload(user)}), 201
 @app.route("/api/auth/login", methods=["POST"])
 def login():
@@ -527,7 +534,7 @@ def login():
     user = User.query.filter_by(email=email).first()
     if not user or not check_password_hash(user.password_hash, password):
         return json_error("Invalid email or password.", 401)
-    login_user(user)
+    login_user(user, remember=True)
     return jsonify({"message": "Logged in.", "user": user_payload(user)})
 @app.route("/api/auth/logout", methods=["POST"])
 @login_required
